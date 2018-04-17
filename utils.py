@@ -4,6 +4,7 @@ import networkx as nx
 import scipy.sparse as sp
 from scipy.sparse.linalg.eigen.arpack import eigsh
 import sys
+import tensorflow as tf
 
 
 def parse_index_file(filename):
@@ -98,7 +99,7 @@ def preprocess_features(features):
     r_inv[np.isinf(r_inv)] = 0.
     r_mat_inv = sp.diags(r_inv)
     features = r_mat_inv.dot(features)
-    return sparse_to_tuple(features)
+    return features.toarray()
 
 
 def normalize_adj(adj):
@@ -124,7 +125,6 @@ def construct_feed_dict(features, support, labels, labels_mask, placeholders):
     feed_dict.update({placeholders['labels_mask']: labels_mask})
     feed_dict.update({placeholders['features']: features})
     feed_dict.update({placeholders['support'][i]: support[i] for i in range(len(support))})
-    feed_dict.update({placeholders['num_features_nonzero']: features[1].shape})
     return feed_dict
 
 
@@ -149,3 +149,43 @@ def chebyshev_polynomials(adj, k):
         t_k.append(chebyshev_recurrence(t_k[-1], t_k[-2], scaled_laplacian))
 
     return sparse_to_tuple(t_k)
+
+
+def sample_nodes(adj_nonormed, num=100):
+    N = adj_nonormed.shape[0]
+    flag = np.zeros([N])
+    output = [0] * num
+    for i in range(num):
+        a = np.random.randint(0, N)
+        while flag[a] == 1:
+            a = np.random.randint(0, N)
+        output[i] = a
+        flag[a] = 1
+        flag[np.nonzero(adj_nonormed[a])] = 1
+        for j in np.nonzero(adj_nonormed[a])[0]:
+            flag[np.nonzero(adj_nonormed[j])] = 1
+        #print(flag.sum())
+    output_ = np.ones([N])
+    output_[output] = 0
+    output_ = np.nonzero(output_)[0]
+    return torch.LongTensor(output).cuda(), torch.LongTensor(output_).cuda()
+
+def kl_divergence_with_logit(q_logit, p_logit):
+    q = tf.nn.softmax(q_logit)
+    qlogq = tf.reduce_mean(tf.reduce_sum(q * logsoftmax(q_logit), 1))
+    qlogp = tf.reduce_mean(tf.reduce_sum(q * logsoftmax(p_logit), 1))
+    return qlogq - qlogp
+
+def logsoftmax(x):
+    xdev = x - tf.reduce_max(x, 1, keepdims=True)
+    lsm = xdev - tf.log(tf.reduce_sum(tf.exp(xdev), 1, keepdims=True))
+    return lsm
+
+def entropy_y_x(logit):
+    p = tf.nn.softmax(logit)
+    return -tf.reduce_mean(tf.reduce_sum(p * logsoftmax(logit), 1))
+
+def get_normalized_vector(d):
+    d /= (1e-12 + tf.reduce_max(tf.abs(d), 1, keepdims=True))
+    d /= tf.sqrt(1e-6 + tf.reduce_sum(tf.pow(d, 2.0), 1, keepdims=True))
+    return d

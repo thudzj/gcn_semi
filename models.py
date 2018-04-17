@@ -1,5 +1,6 @@
 from layers import *
 from metrics import *
+from utils import kl_divergence_with_logit, entropy_y_x, get_normalized_vector
 
 flags = tf.app.flags
 FLAGS = flags.FLAGS
@@ -141,7 +142,48 @@ class GCN(Model):
 
         self.optimizer = tf.train.AdamOptimizer(learning_rate=FLAGS.learning_rate)
 
-        self.build()
+        with tf.variable_scope(self.name):
+            self._build()
+
+        self.outputs = self.get_output(self.inputs)
+
+        logit = self.get_output(self.inputs)
+        self.loss += self.vat_loss(self.inputs, logit) +  entropy_y_x(logit)
+        # Store model variables for easy access
+        variables = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=self.name)
+        self.vars = {var.name: var for var in variables}
+
+        # Build metrics
+        self._loss()
+        self._accuracy()
+
+        self.opt_op = self.optimizer.minimize(self.loss)
+
+    def vat_loss(self, x, logit):
+        d = tf.random_normal(shape=tf.shape(x))
+        for _ in range(FLAGS.num_power_iterations):
+            d = FLAGS.xi * get_normalized_vector(d)
+            logit_p = logit
+            logit_m = self.get_output(x + d)
+            print(d, logit_p, logit_m)
+            dist = kl_divergence_with_logit(logit_p, logit_m)
+            grad = tf.gradients(dist, [d], aggregation_method=2)[0]
+            d = tf.stop_gradient(grad)
+
+        r_vadv = FLAGS.epsilon * get_normalized_vector(d)
+
+        logit_p = tf.stop_gradient(logit)
+        logit_m = self.get_output(x + r_vadv)
+        loss = kl_divergence_with_logit(logit_p, logit_m)
+        return tf.identity(loss, name="vat_loss")
+
+    def get_output(self, inp):
+        activations = []
+        activations.append(inp)
+        for layer in self.layers:
+            hidden = layer(activations[-1])
+            activations.append(hidden)
+        return activations[-1]
 
     def _loss(self):
         # Weight decay loss
@@ -163,7 +205,6 @@ class GCN(Model):
                                             placeholders=self.placeholders,
                                             act=tf.nn.relu,
                                             dropout=True,
-                                            sparse_inputs=True,
                                             logging=self.logging))
 
         self.layers.append(GraphConvolution(input_dim=FLAGS.hidden1,
