@@ -118,13 +118,16 @@ def preprocess_adj(adj):
     return sparse_to_tuple(adj_normalized)
 
 
-def construct_feed_dict(features, support, labels, labels_mask, placeholders):
+def construct_feed_dict(features, support, labels, labels_mask, placeholders, adj_nonormed):
     """Construct feed dictionary."""
     feed_dict = dict()
     feed_dict.update({placeholders['labels']: labels})
     feed_dict.update({placeholders['labels_mask']: labels_mask})
     feed_dict.update({placeholders['features']: features})
     feed_dict.update({placeholders['support'][i]: support[i] for i in range(len(support))})
+    r1, r2 = sample_nodes(adj_nonormed)
+    feed_dict.update({placeholders['adv_mask1']: r1})
+    feed_dict.update({placeholders['adv_mask2']: r2})
     return feed_dict
 
 
@@ -161,19 +164,28 @@ def sample_nodes(adj_nonormed, num=100):
             a = np.random.randint(0, N)
         output[i] = a
         flag[a] = 1
-        flag[np.nonzero(adj_nonormed[a])] = 1
-        for j in np.nonzero(adj_nonormed[a])[0]:
-            flag[np.nonzero(adj_nonormed[j])] = 1
-        #print(flag.sum())
+        for ii in np.nonzero(adj_nonormed[a])[0]:
+            flag[ii] = 1
+            for iii in np.nonzero(adj_nonormed[ii])[0]:
+                flag[iii] = 1
+                for iiii in np.nonzero(adj_nonormed[iii])[0]:
+                    flag[iiii] = 1
+                    flag[np.nonzero(adj_nonormed[iiii])] = 1
     output_ = np.ones([N])
     output_[output] = 0
     output_ = np.nonzero(output_)[0]
-    return torch.LongTensor(output).cuda(), torch.LongTensor(output_).cuda()
+    return sample_mask(output, N), sample_mask(output_, N)
 
-def kl_divergence_with_logit(q_logit, p_logit):
+def kl_divergence_with_logit(q_logit, p_logit, mask=None):
     q = tf.nn.softmax(q_logit)
-    qlogq = tf.reduce_mean(tf.reduce_sum(q * logsoftmax(q_logit), 1))
-    qlogp = tf.reduce_mean(tf.reduce_sum(q * logsoftmax(p_logit), 1))
+    if not mask is None:
+        mask = tf.cast(mask, dtype=tf.float32)
+        mask /= tf.reduce_mean(mask)
+        qlogq = tf.reduce_mean(tf.reduce_sum(q * logsoftmax(q_logit), 1) * mask)
+        qlogp = tf.reduce_mean(tf.reduce_sum(q * logsoftmax(p_logit), 1) * mask)
+    else:
+        qlogq = tf.reduce_mean(tf.reduce_sum(q * logsoftmax(q_logit), 1))
+        qlogp = tf.reduce_mean(tf.reduce_sum(q * logsoftmax(p_logit), 1))
     return qlogq - qlogp
 
 def logsoftmax(x):

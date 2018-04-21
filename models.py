@@ -147,8 +147,6 @@ class GCN(Model):
 
         self.outputs = self.get_output(self.inputs)
 
-        logit = self.get_output(self.inputs)
-        self.loss += self.vat_loss(self.inputs, logit) +  entropy_y_x(logit)
         # Store model variables for easy access
         variables = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=self.name)
         self.vars = {var.name: var for var in variables}
@@ -165,16 +163,16 @@ class GCN(Model):
             d = FLAGS.xi * get_normalized_vector(d)
             logit_p = logit
             logit_m = self.get_output(x + d)
-            print(d, logit_p, logit_m)
-            dist = kl_divergence_with_logit(logit_p, logit_m)
+            dist = kl_divergence_with_logit(logit_p, logit_m, self.placeholders['adv_mask1'])
             grad = tf.gradients(dist, [d], aggregation_method=2)[0]
             d = tf.stop_gradient(grad)
 
         r_vadv = FLAGS.epsilon * get_normalized_vector(d)
+        #self.r_vadv = r_vadv
 
         logit_p = tf.stop_gradient(logit)
         logit_m = self.get_output(x + r_vadv)
-        loss = kl_divergence_with_logit(logit_p, logit_m)
+        loss = kl_divergence_with_logit(logit_p, logit_m, self.placeholders['adv_mask1'])
         return tf.identity(loss, name="vat_loss")
 
     def get_output(self, inp):
@@ -193,6 +191,9 @@ class GCN(Model):
         # Cross entropy error
         self.loss += masked_softmax_cross_entropy(self.outputs, self.placeholders['labels'],
                                                   self.placeholders['labels_mask'])
+
+        logit = self.get_output(self.inputs)
+        self.loss += FLAGS.p1*self.vat_loss(self.inputs, logit) + FLAGS.p2*entropy_y_x(logit)
 
     def _accuracy(self):
         self.accuracy = masked_accuracy(self.outputs, self.placeholders['labels'],
