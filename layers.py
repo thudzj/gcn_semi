@@ -18,13 +18,17 @@ def get_layer_uid(layer_name=''):
         return _LAYER_UIDS[layer_name]
 
 
-def sparse_dropout(x, keep_prob, noise_shape):
+def sparse_dropout(x, keep_prob, noise_shape, y=None):
     """Dropout for sparse tensors."""
+    #return tf.SparseTensor(x.indices, tf.nn.dropout(x.values, keep_prob), x.dense_shape)
     random_tensor = keep_prob
     random_tensor += tf.random_uniform(noise_shape)
     dropout_mask = tf.cast(tf.floor(random_tensor), dtype=tf.bool)
     pre_out = tf.sparse_retain(x, dropout_mask)
-    return pre_out * (1./keep_prob)
+    if y is None:
+        return pre_out * (1./keep_prob)
+    else:
+        return pre_out * (1./keep_prob), tf.sparse_retain(y, dropout_mask) * (1./keep_prob)
 
 
 def dot(x, y, sparse=False):
@@ -68,11 +72,11 @@ class Layer(object):
     def _call(self, inputs):
         return inputs
 
-    def __call__(self, inputs):
+    def __call__(self, inputs, a_hat, a_sparse, dropout_rate=None):
         with tf.name_scope(self.name):
             if self.logging and not self.sparse_inputs:
                 tf.summary.histogram(self.name + '/inputs', inputs)
-            outputs = self._call(inputs)
+            outputs = self._call(inputs, a_hat, a_sparse, dropout_rate)
             if self.logging:
                 tf.summary.histogram(self.name + '/outputs', outputs)
             return outputs
@@ -97,9 +101,6 @@ class Dense(Layer):
         self.sparse_inputs = sparse_inputs
         self.featureless = featureless
         self.bias = bias
-
-        # helper variable for sparse dropout
-        self.num_features_nonzero = placeholders['num_features_nonzero']
 
         with tf.variable_scope(self.name + '_vars'):
             self.vars['weights'] = glorot([input_dim, output_dim],
@@ -131,55 +132,40 @@ class Dense(Layer):
 
 class GraphConvolution(Layer):
     """Graph convolution layer."""
-    def __init__(self, input_dim, output_dim, placeholders, dropout=0.,
+    def __init__(self, input_dim, output_dim, dropout=False,
                  sparse_inputs=False, act=tf.nn.relu, bias=False,
                  featureless=False, **kwargs):
         super(GraphConvolution, self).__init__(**kwargs)
 
-        if dropout:
-            self.dropout = placeholders['dropout']
-        else:
-            self.dropout = 0.
-
+        self.dropout = dropout
         self.act = act
-        self.support = placeholders['support']
         self.sparse_inputs = sparse_inputs
         self.featureless = featureless
         self.bias = bias
 
-        # helper variable for sparse dropout
-        self.num_features_nonzero = placeholders['num_features_nonzero']
-
         with tf.variable_scope(self.name + '_vars'):
-            for i in range(len(self.support)):
-                self.vars['weights_' + str(i)] = glorot([input_dim, output_dim],
-                                                        name='weights_' + str(i))
+            self.vars['weights_' + str(0)] = glorot([input_dim, output_dim],
+                                                    name='weights_' + str(0))
             if self.bias:
                 self.vars['bias'] = zeros([output_dim], name='bias')
 
         if self.logging:
             self._log_vars()
 
-    def _call(self, inputs):
+    def _call(self, inputs, a_hat, a_sparse, dropout_rate=None):
         x = inputs
 
         # dropout
-        if self.sparse_inputs:
-            x = sparse_dropout(x, 1-self.dropout, self.num_features_nonzero)
-        else:
-            x = tf.nn.dropout(x, 1-self.dropout)
+        if self.dropout:
+            x = tf.nn.dropout(x, 1-dropout_rate)
 
         # convolve
-        supports = list()
-        for i in range(len(self.support)):
-            if not self.featureless:
-                pre_sup = dot(x, self.vars['weights_' + str(i)],
-                              sparse=self.sparse_inputs)
-            else:
-                pre_sup = self.vars['weights_' + str(i)]
-            support = dot(self.support[i], pre_sup, sparse=True)
-            supports.append(support)
-        output = tf.add_n(supports)
+        if not self.featureless:
+            pre_sup = dot(x, self.vars['weights_' + str(0)],
+                          sparse=self.sparse_inputs)
+        else:
+            pre_sup = self.vars['weights_' + str(0)]
+        output = dot(a_hat, pre_sup, sparse=a_sparse)
 
         # bias
         if self.bias:

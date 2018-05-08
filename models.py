@@ -1,5 +1,6 @@
 from layers import *
 from metrics import *
+from utils import kl_divergence_with_logit, entropy_y_x, get_normalized_matrix, get_normalized_vector
 
 flags = tf.app.flags
 FLAGS = flags.FLAGS
@@ -130,7 +131,7 @@ class MLP(Model):
 
 
 class GCN(Model):
-    def __init__(self, placeholders, input_dim, **kwargs):
+    def __init__(self, placeholders, is_sparse, input_dim, multitask, **kwargs):
         super(GCN, self).__init__(**kwargs)
 
         self.inputs = placeholders['features']
@@ -138,19 +139,103 @@ class GCN(Model):
         # self.input_dim = self.inputs.get_shape().as_list()[1]  # To be supported in future Tensorflow versions
         self.output_dim = placeholders['labels'].get_shape().as_list()[1]
         self.placeholders = placeholders
+        self.is_sparse = is_sparse
+        self.multitask = multitask
 
         self.optimizer = tf.train.AdamOptimizer(learning_rate=FLAGS.learning_rate)
 
-        self.build()
+        with tf.variable_scope(self.name):
+            self._build()
+
+        self.outputs = self.get_output(sparse_dropout(self.inputs, 1-self.placeholders['dropout'], self.placeholders['num_features_nonzero']))
+
+        # Store model variables for easy access
+        variables = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=self.name)
+        self.vars = {var.name: var for var in variables}
+
+        # Build metrics
+        self._loss()
+        self._accuracy()
+
+        self.opt_op = self.optimizer.minimize(self.loss)
+
+    def vat_loss(self, x, logit):
+        if self.is_sparse:
+            d = tf.random_normal(shape=tf.shape(x.values))
+            indx = x.indices
+            dshp = x.dense_shape
+            add_op = tf.sparse_add
+        else:
+            d = tf.random_normal(shape=tf.shape(x))
+            indx = None
+            dshp = None
+            add_op = tf.add
+        #self.accuracy0 = accuracy(logit, self.placeholders['labels'])
+        #self.accuracya = []
+        self.losses = []
+        for _ in range(FLAGS.num_power_iterations):
+            d = get_normalized_vector(d, self.placeholders['norm_mtx'], self.is_sparse, indx, dshp) * FLAGS.xi
+            d, x_d = sparse_dropout(d, 1-self.placeholders['dropout'], self.placeholders['num_features_nonzero'], x)
+            logit_p = logit
+            #self.losses.append(kl_divergence_with_logit(logit_p, self.get_output(add_op(x, d/FLAGS.xi*FLAGS.epsilon))))
+            logit_m = self.get_output(add_op(x_d, d))
+            dist = kl_divergence_with_logit(logit_p, logit_m, self.placeholders['adv_mask1'])
+            grad = tf.gradients(dist, [d.values if self.is_sparse else d], aggregation_method=2)[0]
+            d = tf.stop_gradient(grad)
+            # d = tf.random_normal(shape=tf.shape(x))
+            # self.accuracya.append(accuracy(self.get_output(add_op(x, get_normalized_matrix(d, self.is_sparse, indx, dshp) * FLAGS.epsilon)), self.placeholders['labels']))
+
+        r_vadv = get_normalized_vector(d, self.placeholders['norm_mtx'], self.is_sparse, indx, dshp) * FLAGS.epsilon
+        r_vadv, x_d = sparse_dropout(r_vadv, 1-self.placeholders['dropout'], self.placeholders['num_features_nonzero'], x)
+        logit_p = tf.stop_gradient(logit)
+        logit_m = self.get_output(add_op(x_d, r_vadv))
+        #self.accuracy1 = accuracy(logit_m, self.placeholders['labels'])
+        loss = kl_divergence_with_logit(logit_p, logit_m, self.placeholders['adv_mask1'])
+        #self.losses.append(loss)
+        return tf.identity(loss, name="vat_loss")
+    # def vat_loss_edge(self, x, logit):
+    #     a_hat = self.placeholders["support"]
+    #     d = tf.random_normal(shape=a_hat.dense_shape)
+    #     d = get_normalized_vector(d) * FLAGS.xi
+    #     a_hat_ = tf.sparse_add(a_hat, d)
+    #     print(a_hat_)
+    #     logit_p = logit
+    #     logit_m = self.get_output(x, a_hat_, False)
+    #     dist = kl_divergence_with_logit(logit_p, logit_m)
+    #     grad = tf.gradients(dist, [d], aggregation_method=2)[0]
+    #     d = tf.stop_gradient(grad)
+    #     r_vadv = get_normalized_vector(d) * FLAGS.epsilon1
+    #     a_hat_ = tf.sparse_add(a_hat, r_vadv)
+    #     logit_p = tf.stop_gradient(logit)
+    #     logit_m = self.get_output(x, a_hat_, False)
+    #     loss = kl_divergence_with_logit(logit_p, logit_m)
+    #     return tf.identity(loss, name="vat_loss")
+
+    def get_output(self, inp, a_hat=None, a_sparse=True):
+        if a_hat is None:
+            a_hat = self.placeholders["support"]
+        activations = []
+        activations.append(inp)
+        for layer in self.layers:
+            hidden = layer(activations[-1], a_hat, a_sparse, self.placeholders['dropout'])
+            activations.append(hidden)
+        return activations[-1]
 
     def _loss(self):
         # Weight decay loss
         for var in self.layers[0].vars.values():
             self.loss += FLAGS.weight_decay * tf.nn.l2_loss(var)
 
-        # Cross entropy error
-        self.loss += masked_softmax_cross_entropy(self.outputs, self.placeholders['labels'],
-                                                  self.placeholders['labels_mask'])
+        if not self.multitask:
+            # Cross entropy error
+            self.loss += masked_softmax_cross_entropy(self.outputs, self.placeholders['labels'],
+                                                      self.placeholders['labels_mask'])
+        else:
+            self.loss += masked_sigmoid_cross_entropy(self.outputs, self.placeholders['labels'],
+                                                      self.placeholders['labels_mask'])
+
+        logit = self.get_output(self.inputs)
+        self.loss += FLAGS.p1*self.vat_loss(self.inputs, logit) + FLAGS.p2*entropy_y_x(logit)#FLAGS.p3*self.vat_loss_edge(self.inputs, logit)
 
     def _accuracy(self):
         self.accuracy = masked_accuracy(self.outputs, self.placeholders['labels'],
@@ -160,15 +245,13 @@ class GCN(Model):
 
         self.layers.append(GraphConvolution(input_dim=self.input_dim,
                                             output_dim=FLAGS.hidden1,
-                                            placeholders=self.placeholders,
                                             act=tf.nn.relu,
-                                            dropout=True,
-                                            sparse_inputs=True,
+                                            dropout=False,
+                                            sparse_inputs=self.is_sparse,
                                             logging=self.logging))
 
         self.layers.append(GraphConvolution(input_dim=FLAGS.hidden1,
                                             output_dim=self.output_dim,
-                                            placeholders=self.placeholders,
                                             act=lambda x: x,
                                             dropout=True,
                                             logging=self.logging))
