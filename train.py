@@ -83,10 +83,10 @@ for epoch in range(FLAGS.epochs):
     feed_dict = construct_feed_dict(features, support, labels, train_mask, placeholders, nbrs)
     feed_dict.update({placeholders['dropout']: FLAGS.dropout})
 
-    # sess.run(model.adv_reset)
-    # for i in range(10):
-    #     outs = sess.run([model.vloss, model.rnorm, model.adv_op], feed_dict=feed_dict)
-    #     print(outs[0], outs[1])
+    sess.run(model.adv_reset)
+    for i in range(10):
+        outs = sess.run([model.vloss, model.rnorm, model.adv_op], feed_dict=feed_dict)
+        print(outs[0], outs[1])
 
     # Training step
     outs = sess.run([model.opt_op, model.loss, model.accuracy], feed_dict=feed_dict)
