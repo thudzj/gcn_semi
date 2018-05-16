@@ -11,36 +11,39 @@ import scipy.sparse as sp
 # Settings
 flags = tf.app.flags
 FLAGS = flags.FLAGS
-flags.DEFINE_string('dataset', 'nell', 'Dataset string.')  # 'cora' 2.0, 0.7, 3, 'citeseer', 'pubmed'
+flags.DEFINE_string('dataset', 'cora', 'Dataset string.')  # 'cora' 2.0, 0.7, 3, 'citeseer', 'pubmed'
 flags.DEFINE_string('model', 'gcn', 'Model string.')  # 'gcn', 'gcn_cheby', 'dense'
 flags.DEFINE_float('learning_rate', 0.01, 'Initial learning rate.')
 flags.DEFINE_integer('epochs', 200, 'Number of epochs to train.')#200
-flags.DEFINE_integer('hidden1', 64, 'Number of units in hidden layer 1.') #16
+flags.DEFINE_integer('hidden1', 16, 'Number of units in hidden layer 1.') #16
 flags.DEFINE_integer('seed', 123, 'Random seed.')
-flags.DEFINE_float('dropout', 0.2, 'Dropout rate (1 - keep probability).') #0.5
-flags.DEFINE_float('p1', 2.0, 'Dropout rate (1 - keep probability).')
+flags.DEFINE_float('dropout', 0.5, 'Dropout rate (1 - keep probability).') #0.5
+flags.DEFINE_float('p1', 1.2, 'Dropout rate (1 - keep probability).')
 flags.DEFINE_float('p2', 0.7, 'Dropout rate (1 - keep probability).')
 #flags.DEFINE_float('p3', 0.5, 'Dropout rate (1 - keep probability).')
-flags.DEFINE_float('weight_decay', 1e-5, 'Weight for L2 loss on embedding matrix.') #5e-4
-flags.DEFINE_integer('early_stopping', 10, 'Tolerance for early stopping (# of epochs).')
-flags.DEFINE_integer('max_degree', 3, 'Maximum Chebyshev polynomial degree.')
+flags.DEFINE_float('weight_decay', 5e-4, 'Weight for L2 loss on embedding matrix.') #5e-4
+flags.DEFINE_integer('early_stopping', 200, 'Tolerance for early stopping (# of epochs).')
 flags.DEFINE_float('epsilon', 0.03, "Norm length for (virtual) adversarial training ")
-flags.DEFINE_integer('num_power_iterations', 3, "The number of power iterations")
+flags.DEFINE_integer('num_power_iterations', 1, "The number of power iterations")
 flags.DEFINE_float('xi', 1e-6, "Small constant for finite difference")
 
 # Set random seed
 np.random.seed(FLAGS.seed)
 tf.set_random_seed(FLAGS.seed)
 # Load data
-is_sparse = True
+is_sparse = False
+if FLAGS.dataset == "nell":
+    is_sparse = True
 nbrs, support, support_test, features, labels, train_mask, val_mask, test_mask = load_data(FLAGS.dataset, is_sparse)
 
 if is_sparse:
     feature_size = features[2][1]
     N = features[2][0]
+    adv_shape = features[1].shape
 else:
     feature_size = features.shape[1]
     N = features.shape[0]
+    adv_shape = features.shape
 
 # Define placeholders
 placeholders = {
@@ -56,7 +59,7 @@ placeholders = {
 }
 
 # Create model
-model = GCN(placeholders, is_sparse, input_dim=feature_size, multitask=(FLAGS.dataset == 'ppi'), logging=True)
+model = GCN(placeholders, is_sparse, adv_shape, input_dim=feature_size, multitask=(FLAGS.dataset == 'ppi'), logging=True)
 
 # Initialize session
 gpu_options = tf.GPUOptions(allow_growth=True)
@@ -92,9 +95,14 @@ for epoch in range(FLAGS.epochs):
     # ggg = sp.coo_matrix(rrr[0], (rrr[1][:,0], rrr[1][:,1]))
     # print(ggg)
     # exit(1)
+    # sess.run(model.adv_reset)
+    # for i in range(11):
+    #     outs = sess.run([model.vloss, model.rnorm, model.adv_op], feed_dict=feed_dict)
+    #     print(outs[0], outs[1])
 
     # Training step
     outs = sess.run([model.opt_op, model.loss, model.accuracy], feed_dict=feed_dict)
+    # print(outs[3])
     # Validation
     cost, acc, micro, macro, duration = evaluate(features, support_test, labels, val_mask, placeholders)
     cost_val.append(cost)

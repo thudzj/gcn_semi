@@ -21,10 +21,12 @@ def writeFile(filename, data):
 if __name__ == '__main__':
 
     outputs = []
+    li2 = [1, 0.3, 0.1, 0.03, 0.01, 0.003, 0.001, 0.0003]
     for p1 in range(0, 21):
-            #p1 /= 10.
-        # for p2 in range(0, 21):
+            p1 /= 10.
+        # for p2 in range(0, 5):
         #     p2 /= 10.
+
             processes = []
             for i in range(8):
                 process = subprocess.Popen('CUDA_VISIBLE_DEVICES={} python -u train.py --epochs 200 --seed {}'.format(i, i), shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)

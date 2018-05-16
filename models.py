@@ -131,7 +131,7 @@ class MLP(Model):
 
 
 class GCN(Model):
-    def __init__(self, placeholders, is_sparse, input_dim, multitask, **kwargs):
+    def __init__(self, placeholders, is_sparse, adv_shape, input_dim, multitask, **kwargs):
         super(GCN, self).__init__(**kwargs)
 
         self.inputs = placeholders['features']
@@ -146,18 +146,35 @@ class GCN(Model):
 
         with tf.variable_scope(self.name):
             self._build()
-
-        self.outputs = self.get_output(sparse_dropout(self.inputs, 1-self.placeholders['dropout'], self.placeholders['num_features_nonzero']))
+        self.outputs = self.get_output(self.inputs)
 
         # Store model variables for easy access
         variables = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=self.name)
         self.vars = {var.name: var for var in variables}
 
-        # Build metrics
+        self.r_vadv = tf.get_variable(initializer=tf.random_uniform_initializer(), name="r_vadv", shape=adv_shape)
+        self.vloss = self.vat_loss_1()
+        self.rnorm = tf.nn.l2_loss(self.r_vadv, "vat_l2")
+        self.adv_reset = tf.assign(self.r_vadv, tf.random_normal(tf.shape(self.r_vadv), stddev=0.01))
+        self.adv_op = tf.train.AdamOptimizer(learning_rate=0.01).minimize(-self.vloss, var_list=[self.r_vadv])
+
         self._loss()
         self._accuracy()
 
         self.opt_op = self.optimizer.minimize(self.loss)
+
+    def vat_loss_1(self, logit=None):
+        if self.is_sparse:
+            r = tf.SparseTensor(self.inputs.indices, tf.nn.l2_normalize(self.r_vadv, [0])  * FLAGS.epsilon, self.inputs.dense_shape)
+            inp = tf.sparse_add(self.inputs, r)
+        else:
+            inp = tf.add(self.inputs, get_normalized_vector(self.r_vadv, False, None, None) * FLAGS.epsilon)
+        if logit is None:
+            logit = self.get_output(self.inputs)
+        logit_p = tf.stop_gradient(logit)
+        logit_m = self.get_output(inp)
+        loss = kl_divergence_with_logit(logit_p, logit_m)
+        return tf.identity(loss, name="vat_loss_1")
 
     def vat_loss(self, x, logit):
         if self.is_sparse:
@@ -173,25 +190,26 @@ class GCN(Model):
         #self.accuracy0 = accuracy(logit, self.placeholders['labels'])
         #self.accuracya = []
         self.losses = []
+
         for _ in range(FLAGS.num_power_iterations):
-            d = get_normalized_vector(d, self.placeholders['norm_mtx'], self.is_sparse, indx, dshp) * FLAGS.xi
-            d, x_d = sparse_dropout(d, 1-self.placeholders['dropout'], self.placeholders['num_features_nonzero'], x)
+            d = get_normalized_vector(d, self.is_sparse, indx, dshp) * FLAGS.xi
             logit_p = logit
             #self.losses.append(kl_divergence_with_logit(logit_p, self.get_output(add_op(x, d/FLAGS.xi*FLAGS.epsilon))))
-            logit_m = self.get_output(add_op(x_d, d))
+            self.losses.append(kl_divergence_with_logit(logit_p, self.get_output(add_op(x, d/FLAGS.xi*FLAGS.epsilon)), self.placeholders['adv_mask1']))
+            logit_m = self.get_output(add_op(x, d))
             dist = kl_divergence_with_logit(logit_p, logit_m, self.placeholders['adv_mask1'])
             grad = tf.gradients(dist, [d.values if self.is_sparse else d], aggregation_method=2)[0]
             d = tf.stop_gradient(grad)
             # d = tf.random_normal(shape=tf.shape(x))
             # self.accuracya.append(accuracy(self.get_output(add_op(x, get_normalized_matrix(d, self.is_sparse, indx, dshp) * FLAGS.epsilon)), self.placeholders['labels']))
 
-        r_vadv = get_normalized_vector(d, self.placeholders['norm_mtx'], self.is_sparse, indx, dshp) * FLAGS.epsilon
-        r_vadv, x_d = sparse_dropout(r_vadv, 1-self.placeholders['dropout'], self.placeholders['num_features_nonzero'], x)
+        r_vadv = get_normalized_vector(d, self.is_sparse, indx, dshp) * FLAGS.epsilon
         logit_p = tf.stop_gradient(logit)
-        logit_m = self.get_output(add_op(x_d, r_vadv))
+        logit_m = self.get_output(add_op(x, r_vadv))
         #self.accuracy1 = accuracy(logit_m, self.placeholders['labels'])
         loss = kl_divergence_with_logit(logit_p, logit_m, self.placeholders['adv_mask1'])
-        #self.losses.append(loss)
+        self.losses.append(loss)
+        print(self.losses)
         return tf.identity(loss, name="vat_loss")
     # def vat_loss_edge(self, x, logit):
     #     a_hat = self.placeholders["support"]
@@ -217,7 +235,7 @@ class GCN(Model):
         activations = []
         activations.append(inp)
         for layer in self.layers:
-            hidden = layer(activations[-1], a_hat, a_sparse, self.placeholders['dropout'])
+            hidden = layer(activations[-1], a_hat, a_sparse, self.placeholders['dropout'], self.placeholders['num_features_nonzero'])
             activations.append(hidden)
         return activations[-1]
 
@@ -226,15 +244,10 @@ class GCN(Model):
         for var in self.layers[0].vars.values():
             self.loss += FLAGS.weight_decay * tf.nn.l2_loss(var)
 
-        if not self.multitask:
-            # Cross entropy error
-            self.loss += masked_softmax_cross_entropy(self.outputs, self.placeholders['labels'],
+        self.loss += masked_softmax_cross_entropy(self.outputs, self.placeholders['labels'],
                                                       self.placeholders['labels_mask'])
-        else:
-            self.loss += masked_sigmoid_cross_entropy(self.outputs, self.placeholders['labels'],
-                                                      self.placeholders['labels_mask'])
-
         logit = self.get_output(self.inputs)
+        #self.vat_loss(self.inputs, logit)
         self.loss += FLAGS.p1*self.vat_loss(self.inputs, logit) + FLAGS.p2*entropy_y_x(logit)#FLAGS.p3*self.vat_loss_edge(self.inputs, logit)
 
     def _accuracy(self):
@@ -246,7 +259,7 @@ class GCN(Model):
         self.layers.append(GraphConvolution(input_dim=self.input_dim,
                                             output_dim=FLAGS.hidden1,
                                             act=tf.nn.relu,
-                                            dropout=False,
+                                            dropout=True,
                                             sparse_inputs=self.is_sparse,
                                             logging=self.logging))
 

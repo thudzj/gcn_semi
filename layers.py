@@ -20,7 +20,7 @@ def get_layer_uid(layer_name=''):
 
 def sparse_dropout(x, keep_prob, noise_shape, y=None):
     """Dropout for sparse tensors."""
-    #return tf.SparseTensor(x.indices, tf.nn.dropout(x.values, keep_prob), x.dense_shape)
+    return tf.SparseTensor(x.indices, tf.nn.dropout(x.values, keep_prob), x.dense_shape)
     random_tensor = keep_prob
     random_tensor += tf.random_uniform(noise_shape)
     dropout_mask = tf.cast(tf.floor(random_tensor), dtype=tf.bool)
@@ -72,11 +72,11 @@ class Layer(object):
     def _call(self, inputs):
         return inputs
 
-    def __call__(self, inputs, a_hat, a_sparse, dropout_rate=None):
+    def __call__(self, inputs, a_hat, a_sparse, dropout_rate=None, num_features_nonzero=None):
         with tf.name_scope(self.name):
             if self.logging and not self.sparse_inputs:
                 tf.summary.histogram(self.name + '/inputs', inputs)
-            outputs = self._call(inputs, a_hat, a_sparse, dropout_rate)
+            outputs = self._call(inputs, a_hat, a_sparse, dropout_rate, num_features_nonzero)
             if self.logging:
                 tf.summary.histogram(self.name + '/outputs', outputs)
             return outputs
@@ -152,12 +152,15 @@ class GraphConvolution(Layer):
         if self.logging:
             self._log_vars()
 
-    def _call(self, inputs, a_hat, a_sparse, dropout_rate=None):
+    def _call(self, inputs, a_hat, a_sparse, dropout_rate=None, num_features_nonzero=None):
         x = inputs
 
         # dropout
         if self.dropout:
-            x = tf.nn.dropout(x, 1-dropout_rate)
+            if self.sparse_inputs:
+                x = sparse_dropout(x, 1-dropout_rate, num_features_nonzero)
+            else:
+                x = tf.nn.dropout(x, 1-dropout_rate)
 
         # convolve
         if not self.featureless:

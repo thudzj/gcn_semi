@@ -12,7 +12,6 @@ from networkx.readwrite import json_graph
 from sklearn.metrics import f1_score
 import multiprocessing
 
-
 def parse_index_file(filename):
     """Parse index file."""
     index = []
@@ -36,7 +35,10 @@ def load_sparse_csr(filename):
     return sp.csr_matrix((  loader['data'], loader['indices'], loader['indptr']),
                          shape = loader['shape'])
 
-def find_4o_nbrs(result_queue, adj, li):
+def starfind_4o_nbrs(args):
+    return find_4o_nbrs(*args)
+
+def find_4o_nbrs(adj, li):
     nbrs = []
     for i in li:
         print(i)
@@ -47,7 +49,8 @@ def find_4o_nbrs(result_queue, adj, li):
                 tmp += adj[iii]
                 tmp += adj[np.nonzero(adj[iii])[1]].sum(0)
         nbrs.append(np.nonzero(tmp)[1])
-    result_queue.put(nbrs)
+    print(li)
+    return nbrs
 
 def load_data(dataset_str, is_sparse):
     if dataset_str == "ppi":
@@ -127,87 +130,32 @@ def load_data(dataset_str, is_sparse):
         val_mask = sample_mask(idx_val, labels.shape[0])
         test_mask = sample_mask(idx_test, labels.shape[0])
 
-        # test_idx_reorder = parse_index_file("data/ind.{}.test.index".format(dataset_str))
-        # test_idx_range = np.sort(test_idx_reorder)
-        # test_idx_range_full = range(allx.shape[0], len(graph))
-        # isolated_node_idx = np.setdiff1d(test_idx_range_full, test_idx_reorder)
-        # tx_extended = sp.lil_matrix((len(test_idx_range_full), x.shape[1]))
-        # tx_extended[test_idx_range-allx.shape[0], :] = tx
-        # tx = tx_extended
-        # ty_extended = np.zeros((len(test_idx_range_full), y.shape[1]))
-        # ty_extended[test_idx_range-allx.shape[0], :] = ty
-        # ty = ty_extended
-        #
-        # features = sp.vstack((allx, tx)).tolil()
-        # features[test_idx_reorder, :] = features[test_idx_range, :]
-        #
-        # idx_all = np.setdiff1d(range(len(graph)), isolated_node_idx)
-        #
-        # if os.path.isfile("data/{}.features.npz".format(dataset_str)):
-        #     print("Creating feature vectors for relations - this might take a while...")
-        #     features_extended = sp.hstack((features, sp.lil_matrix((features.shape[0], len(isolated_node_idx)))),
-        #                                   dtype=np.int32).todense()
-        #     features_extended[isolated_node_idx, features.shape[1]:] = np.eye(len(isolated_node_idx))
-        #     features = sp.csr_matrix(features_extended, dtype=np.float32)
-        #     print("Done!")
-        #     save_sparse_csr("data/{}.features".format(dataset_str), features)
-        # else:
-        #     features = load_sparse_csr("data/{}.features.npz".format(dataset_str))
-
-        # adj = nx.adjacency_matrix(nx.from_dict_of_lists(graph))
-        # labels = np.vstack((ally, ty))
-        # labels[test_idx_reorder, :] = labels[test_idx_range, :]
-        # tmp = labels.sum(0)
-        #
-        # labels = labels[:, np.nonzero(tmp)[0]]
-        # features = preprocess_features(features, is_sparse)
-        # support = preprocess_adj(adj)
-        #
-        # idx_test = test_idx_reorder
-        # idx_train = range(len(y))
-        # idx_val = range(len(y), len(y)+969)
-        # train_mask = sample_mask(idx_train, labels.shape[0])
-        # val_mask = sample_mask(idx_val, labels.shape[0])
-        # test_mask = sample_mask(idx_test, labels.shape[0])
-
-        # y_train = np.zeros(labels.shape)
-        # y_val = np.zeros(labels.shape)
-        # y_test = np.zeros(labels.shape)
-        # y_train[train_mask, :] = labels[train_mask, :]
-        # y_val[val_mask, :] = labels[val_mask, :]
-        # y_test[test_mask, :] = labels[test_mask, :]
-
-    if True:#not os.path.isfile("data/{}.nbrs.npz".format(dataset_str)):
+    if not os.path.isfile("data/{}.nbrs.npz".format(dataset_str)):
         N = adj.shape[0]
-        result_queue = multiprocessing.Queue()
-        jobs = []
-        for i in range(128):
-            li = range(int(N/128)*i, max(int(N/128)*(i+1), N))
-            jobs.append(multiprocessing.Process(target=find_4o_nbrs, args=(result_queue, adj, li)))
-        for job in jobs: job.start()
-        for job in jobs: job.join()
-        nbrs = [job.get() for job in jobs]
+        pool = multiprocessing.Pool(processes=56)
 
+        lis = []
+        for i in range(32):
+            li = range(int(N/32)*i, max(int(N/32)*(i+1), N))
+            lis.append(li)
+        adjs = [adj] * 32
+        results = pool.map(starfind_4o_nbrs, zip(adjs, lis))
 
-            # if i < 100:
-            #     aa = nbrs[i]
-            #     flag = np.zeros([N])
-            #     flag[i] = 1
-            #     for ii in np.nonzero(adj[i])[1]:
-            #         flag[ii] = 1
-            #         for iii in np.nonzero(adj[ii])[1]:
-            #             flag[iii] = 1
-            #             for iiii in np.nonzero(adj[iii])[1]:
-            #                 flag[iiii] = 1
-            #                 flag[np.nonzero(adj[iiii])[1]] = 1
-            #     bb = np.unique(np.nonzero(flag)[0])
-            #     assert(np.all(aa==bb))
+        pool.close()
+        pool.join()
+        nbrs = results[0]
+        # cnt = 0
+        # for i in range(32):
+        #
+        #     cnt += len(results[i])
+        #     print(cnt)
+        #     nbrs += results[i]
 
         np.savez("data/{}.nbrs.npz".format(dataset_str), data = nbrs)
-        print(adj.shape, len(nbrs))
     else:
         loader = np.load("data/{}.nbrs.npz".format(dataset_str))
         nbrs = loader['data']
+    print(adj.shape, len(nbrs))
     return nbrs, support, support, features, labels, train_mask, val_mask, test_mask
 
 def sparse_to_tuple(sparse_mx):
@@ -266,10 +214,10 @@ def construct_feed_dict(features, support, labels, labels_mask, placeholders, nb
     feed_dict.update({placeholders['features']: features})
     feed_dict.update({placeholders['support']: support})
     feed_dict.update({placeholders['num_features_nonzero']: features[1].shape})
-    r1, r3 = sample_nodes(nbrs)
+    r1 = sample_nodes(nbrs)
     feed_dict.update({placeholders['adv_mask1']: r1})
     #feed_dict.update({placeholders['adv_mask2']: r2})
-    feed_dict.update({placeholders['norm_mtx']: r3})
+    #feed_dict.update({placeholders['norm_mtx']: r3})
     return feed_dict
 
 
@@ -300,31 +248,34 @@ def sample_nodes(nbrs, num=100):
     N = len(nbrs)
     flag = np.zeros([N])
     output = [0] * num
-    norm_mtx = np.zeros([N, N])
+    #norm_mtx = np.zeros([N, N])
     for i in range(num):
         a = np.random.randint(0, N)
         while flag[a] == 1:
             a = np.random.randint(0, N)
         output[i] = a
+        # for nell to speed up
         flag[nbrs[a]] = 1
 
-        tmp = np.zeros([N])
-        tmp[nbrs[a]] = 1
-        norm_mtx[nbrs[a]] = tmp
+        # tmp = np.zeros([N])
+        # tmp[nbrs[a]] = 1
+        #norm_mtx[nbrs[a]] = tmp
     # output_ = np.ones([N])
     # output_[output] = 0
     # output_ = np.nonzero(output_)[0]
-    return sample_mask(output, N), norm_mtx
+    return sample_mask(output, N)#, norm_mtx
 
 def kl_divergence_with_logit(q_logit, p_logit, mask=None):
-    q = tf.nn.softmax(q_logit)
+
     if not mask is None:
+        q = tf.nn.softmax(q_logit)
         mask = tf.cast(mask, dtype=tf.float32)
         mask /= tf.reduce_mean(mask)
         qlogq = tf.reduce_mean(tf.reduce_sum(q * tf.nn.log_softmax(q_logit), 1) * mask)
         qlogp = tf.reduce_mean(tf.reduce_sum(q * tf.nn.log_softmax(p_logit), 1) * mask)
-        return qlogq - qlogp
+        return  - qlogp
     else:
+        q = tf.nn.softmax(q_logit)
         qlogq = tf.reduce_sum(q * tf.nn.log_softmax(q_logit), 1)
         qlogp = tf.reduce_sum(q * tf.nn.log_softmax(p_logit), 1)
         return tf.reduce_mean( - qlogp)
@@ -334,17 +285,17 @@ def entropy_y_x(logit):
     p = tf.nn.softmax(logit)
     return -tf.reduce_mean(tf.reduce_sum(p * tf.nn.log_softmax(logit), 1))
 
-def get_normalized_vector(d, norm_mtx, sparse=False, indices=None, dense_shape=None):
+def get_normalized_vector(d, sparse=False, indices=None, dense_shape=None):
     if sparse:
         d /= (1e-12 + tf.reduce_max(tf.abs(d)))
         d2 = tf.SparseTensor(indices, tf.square(d), dense_shape)
         d = tf.SparseTensor(indices, d, dense_shape)
-        d /= tf.sqrt(1e-6 + tf.matmul(norm_mtx, tf.sparse_reduce_sum(d2, 1, keepdims=True)))
+        d /= tf.sqrt(1e-6 + tf.sparse_reduce_sum(d2, 1, keep_dims=True))
         return d
     else:
-        d /= (1e-12 + tf.reduce_max(tf.abs(d), 1, keepdims=True))
+        d /= (1e-12 + tf.reduce_max(tf.abs(d)))
 
-        d /= tf.sqrt(1e-6 + tf.matmul(norm_mtx, tf.sparse_reduce_sum(tf.pow(d, 2.0), 1, keepdims=True)))
+        d /= tf.sqrt(1e-6 + tf.reduce_sum(tf.pow(d, 2.0), 1, keepdims=True))
         return d
 
 def get_normalized_matrix(d, sparse=False, indices=None, dense_shape=None):
