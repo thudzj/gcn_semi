@@ -11,17 +11,17 @@ import scipy.sparse as sp
 # Settings
 flags = tf.app.flags
 FLAGS = flags.FLAGS
-flags.DEFINE_string('dataset', 'nell', 'Dataset string.')  # 'cora' 2.0, 0.7, 3, 'citeseer', 'pubmed'
+flags.DEFINE_string('dataset', 'cora', 'Dataset string.')  # 'cora' 2.0, 0.7, 3, 'citeseer', 'pubmed'
 flags.DEFINE_string('model', 'gcn', 'Model string.')  # 'gcn', 'gcn_cheby', 'dense'
 flags.DEFINE_float('learning_rate', 0.01, 'Initial learning rate.')
 flags.DEFINE_integer('epochs', 200, 'Number of epochs to train.')#200
-flags.DEFINE_integer('hidden1', 64, 'Number of units in hidden layer 1.') #16
+flags.DEFINE_integer('hidden1', 16, 'Number of units in hidden layer 1.') #16
 flags.DEFINE_integer('seed', 123, 'Random seed.')
-flags.DEFINE_float('dropout', 0.15, 'Dropout rate (1 - keep probability).') #0.5
-flags.DEFINE_float('p1', 0.1, 'Dropout rate (1 - keep probability).')
-flags.DEFINE_float('p2', 0.0, 'Dropout rate (1 - keep probability).')
+flags.DEFINE_float('dropout', 0.5, 'Dropout rate (1 - keep probability).') #0.5
+flags.DEFINE_float('p1', 1.5, 'Alpha.')
+flags.DEFINE_float('p2', 0.5, 'Beta.')
 #flags.DEFINE_float('p3', 0.5, 'Dropout rate (1 - keep probability).')
-flags.DEFINE_float('weight_decay', 1e-5, 'Weight for L2 loss on embedding matrix.') #5e-4
+flags.DEFINE_float('weight_decay', 5e-4, 'Weight for L2 loss on embedding matrix.') #5e-4
 flags.DEFINE_integer('early_stopping', 200, 'Tolerance for early stopping (# of epochs).')
 # Set random seed
 np.random.seed(FLAGS.seed)
@@ -85,8 +85,8 @@ for epoch in range(FLAGS.epochs):
 
     sess.run(model.adv_reset)
     for i in range(10):
-        outs = sess.run([model.vloss, model.rnorm, model.adv_op], feed_dict=feed_dict)
-        print(outs[0], outs[1])
+        outs = sess.run([model.adv_op], feed_dict=feed_dict)
+        #print(outs[0], outs[1])
 
     # Training step
     outs = sess.run([model.opt_op, model.loss, model.accuracy], feed_dict=feed_dict)
